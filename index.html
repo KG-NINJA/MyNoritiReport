@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gesture Interface</title>
+  <style>
+    * { box-sizing: border-box; }
+    html { font-size: clamp(12px, 2vw, 16px); }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #0a0e27, #1a1a3e);
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      overflow: hidden;
+    }
+    .container {
+      width: min(95vw, 1400px);
+      height: 95vh;
+      background: rgba(0, 0, 0, 0.55);
+      border: 1px solid rgba(0, 212, 255, 0.3);
+      border-radius: 1.5rem;
+      box-shadow: 0 0 40px rgba(0, 212, 255, 0.15);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      backdrop-filter: blur(10px);
+    }
+    header {
+      padding: 1.5rem 2rem;
+      background: linear-gradient(90deg, rgba(0, 212, 255, 0.1), rgba(0, 150, 255, 0.05));
+      border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header-title {
+      font-size: 1.8rem;
+      font-weight: 700;
+      text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
+    }
+    .main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      gap: 1.5rem;
+      padding: 1.5rem;
+      overflow: hidden;
+    }
+    .canvas-wrapper {
+      position: relative;
+      border: 1px solid rgba(0, 212, 255, 0.3);
+      border-radius: 1rem;
+      overflow: hidden;
+      background: radial-gradient(circle at 30% 30%, rgba(0,212,255,0.06), transparent);
+    }
+    canvas, video {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+    }
+    video { opacity: 0.25; object-fit: cover; }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 1.2rem;
+    }
+    .card {
+      background: rgba(0,212,255,0.06);
+      border: 1px solid rgba(0,212,255,0.2);
+      border-radius: 0.8rem;
+      padding: 1.2rem;
+    }
+    .btn {
+      border: 1px solid rgba(0,212,255,0.5);
+      background: rgba(0,212,255,0.15);
+      color: #00d4ff;
+      padding: 1rem;
+      border-radius: 0.6rem;
+      font-weight: bold;
+      cursor: pointer;
+      text-transform: uppercase;
+      transition: 0.2s;
+    }
+    .btn:hover { box-shadow: 0 0 20px rgba(0,212,255,0.4); }
+    .badge {
+      padding: 0.7rem 1rem;
+      border-radius: 0.6rem;
+      font-size: 0.8rem;
+      background: rgba(0,212,255,0.12);
+      border: 1px solid rgba(0,212,255,0.3);
+    }
+    .badge.active {
+      background: rgba(0,255,136,0.2);
+      border-color: #00ff88;
+      color: #00ff88;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div class="header-title">✋ GESTURE INTERFACE</div>
+    <div class="stat">
+      <div style="font-size:0.8rem; opacity:0.7;">Score</div>
+      <div id="score" style="font-size:2.2rem; font-weight:bold;">0</div>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="canvas-wrapper">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div class="sidebar">
+      <div class="card">
+        <button class="btn" id="start-btn">START</button>
+        <button class="btn" id="reset-btn">RESET</button>
+      </div>
+
+      <div class="card">
+        <div class="badge" id="cam-badge">Camera</div>
+        <div class="badge" id="hand-badge">Hands</div>
+      </div>
+
+      <div class="card" id="info" style="text-align:center;">
+        Click START to begin
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+<script>
+/*---------------------------------------------
+   基本 UI / 状態管理
+---------------------------------------------*/
+const canvas = document.getElementById("canvas");
+const video  = document.getElementById("video");
+const ctx    = canvas.getContext("2d");
+
+const startBtn = document.getElementById("start-btn");
+const resetBtn = document.getElementById("reset-btn");
+const scoreEl  = document.getElementById("score");
+const infoEl   = document.getElementById("info");
+const camBadge = document.getElementById("cam-badge");
+const handBadge = document.getElementById("hand-badge");
+
+let videoReady = false;
+let gameRunning = false;
+let score = 0;
+let hands = null;
+
+let previousHandPositions = { left: null, right: null };
+
+/*---------------------------------------------
+   ★ 重要：スクロール用変数（未定義バグ修正）
+---------------------------------------------*/
+let scrollOffset = 0;
+let maxScroll = 1;
+
+let scrollUp = null;
+let scrollDown = null;
+
+/*---------------------------------------------
+   サウンド
+---------------------------------------------*/
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playPopSound() {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = "sine";
+  osc.frequency.value = 700;
+  gain.gain.value = 0.2;
+
+  osc.connect(gain).connect(audioCtx.destination);
+  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.08);
+
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.08);
+}
+
+/*---------------------------------------------
+   アイコン
+---------------------------------------------*/
+const icons = ["🎨", "🌟", "⚡", "🎯", "💎", "🔥"];
+let floatingIcons = [];
+
+class FloatingIcon {
+  constructor(gridX, gridY) {
+    this.gridX = gridX;
+    this.gridY = gridY;
+    this.emoji = icons[Math.floor(Math.random()*icons.length)];
+    this.size = 50;
+    this.opacity = 1;
+  }
+
+  getPosition() {
+    const pad = canvas.width * 0.08;
+    const cw = (canvas.width - pad*2) / 3;
+    const ch = (canvas.height - pad*2) / 2;
+
+    return {
+      x: pad + cw*this.gridX + cw/2,
+      y: pad + ch*this.gridY + ch/2 + scrollOffset * canvas.height
+    };
+  }
+
+  draw() {
+    const pos = this.getPosition();
+    if (pos.y < -120 || pos.y > canvas.height + 120) return;
+
+    ctx.save();
+    ctx.globalAlpha = this.opacity;
+    ctx.font = `${this.size}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = "rgba(0,212,255,0.6)";
+    ctx.fillText(this.emoji, pos.x, pos.y);
+    ctx.restore();
+  }
+
+  getClickBox() {
+    const pos = this.getPosition();
+    return { x: pos.x, y: pos.y, size: this.size + 20 };
+  }
+
+  destroy() { this.opacity = 0; }
+  isDestroyed() { return this.opacity <= 0; }
+
+  checkSwipe(x1,y1,x2,y2) {
+    const box = this.getClickBox();
+    const d = pointToLineDistance(box.x,box.y,x1,y1,x2,y2);
+    if (d < box.size/2) {
+      this.destroy();
+      return true;
+    }
+    return false;
+  }
+}
+
+function pointToLineDistance(px,py,x1,y1,x2,y2){
+  const A=px-x1, B=py-y1, C=x2-x1, D=y2-y1;
+  const dot=A*C+B*D, len=C*C+D*D;
+  let param=len!==0 ? dot/len : -1;
+  let xx,yy;
+
+  if(param<0){ xx=x1; yy=y1; }
+  else if(param>1){ xx=x2; yy=y2; }
+  else { xx=x1+param*C; yy=y1+param*D; }
+
+  return Math.hypot(px-xx,py-yy);
+}
+
+/*---------------------------------------------
+   MediaPipe Hands
+---------------------------------------------*/
+async function initHands() {
+  hands = new Hands({
+    locateFile: file =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+  hands.setOptions({
+    maxNumHands:2,
+    modelComplexity:1,
+    minDetectionConfidence:0.5,
+    minTrackingConfidence:0.5
+  });
+  hands.onResults(onHandsResults);
+}
+
+async function initCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width:1280, height:720, facingMode:"user" },
+      audio:false
+    });
+    video.srcObject = stream;
+
+    await new Promise(res => {
+      video.onloadedmetadata = () => { video.play(); res(); };
+    });
+
+    videoReady = true;
+    camBadge.classList.add("active");
+
+    const camera = new Camera(video, {
+      onFrame: async ()=>{ await hands.send({image:video}); },
+      width:1280, height:720
+    });
+    camera.start();
+
+  } catch(e) {
+    infoEl.textContent = "Camera error: "+e.message;
+  }
+}
+
+/*---------------------------------------------
+   手検出時の処理
+---------------------------------------------*/
+function onHandsResults(results) {
+  const hasHand = results.multiHandLandmarks?.length > 0;
+  handBadge.classList.toggle("active", hasHand);
+
+  if(!hasHand) return;
+
+  results.multiHandLandmarks.forEach((lm, idx)=>{
+    const key = idx===0 ? "left" : "right";
+    const x = (lm[8].x + lm[12].x)/2 * canvas.width;
+    const y = (lm[8].y + lm[12].y)/2 * canvas.height;
+
+    const curr = {x,y};
+    const prev = previousHandPositions[key];
+
+    if(prev && gameRunning){
+      const dist = Math.hypot(curr.x-prev.x, curr.y-prev.y);
+      if(dist > 45){
+        floatingIcons.forEach(icon=>{
+          if(icon.checkSwipe(prev.x,prev.y,curr.x,curr.y)){
+            score += 10;
+            scoreEl.textContent = score;
+            playPopSound();
+          }
+        });
+      }
+    }
+
+    previousHandPositions[key] = curr;
+  });
+}
+
+/*---------------------------------------------
+   START / RESET
+---------------------------------------------*/
+startBtn.onclick = async ()=>{
+  if(!videoReady){
+    startBtn.textContent="LOADING...";
+    startBtn.disabled = true;
+
+    await initHands();
+    await initCamera();
+
+    startBtn.textContent="START";
+    startBtn.disabled = false;
+  }
+
+  gameRunning = true;
+  scrollOffset = 0;
+
+  floatingIcons = [];
+  for(let y=0;y<2;y++){
+    for(let x=0;x<3;x++){
+      floatingIcons.push(new FloatingIcon(x,y));
+    }
+  }
+
+  infoEl.textContent = "Swipe the icons!";
+  startBtn.disabled = true;
+};
+
+resetBtn.onclick = ()=>{
+  gameRunning = false;
+  floatingIcons = [];
+  score = 0;
+  scrollOffset = 0;
+  scoreEl.textContent = 0;
+  startBtn.disabled = false;
+  infoEl.textContent = "Reset complete.";
+};
+
+/*---------------------------------------------
+   Main Loop
+---------------------------------------------*/
+function loop() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  if(canvas.width !== rect.width || canvas.height !== rect.height){
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+  }
+
+  ctx.fillStyle = "rgba(10,14,39,0.25)";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  ctx.strokeStyle = "rgba(0,212,255,0.03)";
+  for(let x=0;x<canvas.width;x+=80){
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+  }
+
+  if(gameRunning){
+    floatingIcons = floatingIcons.filter(i=>!i.isDestroyed());
+  }
+
+  floatingIcons.forEach(i=>i.draw());
+
+  ["left","right"].forEach(hand=>{
+    const p = previousHandPositions[hand];
+    if(p){
+      ctx.fillStyle = hand==="left"
+        ? "rgba(0,255,136,0.5)"
+        : "rgba(255,107,157,0.5)";
+      ctx.beginPath();
+      ctx.arc(p.x,p.y,14,0,Math.PI*2);
+      ctx.fill();
+    }
+  });
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+
+</body>
+</html>
