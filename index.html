@@ -62,6 +62,7 @@
     canvas, video {
       position: absolute; top: 0; left: 0;
       width: 100%; height: 100%;
+      transform: scaleX(-1); /* 鏡映し表示 */
     }
     video { opacity: 0.25; object-fit: cover; }
 
@@ -392,12 +393,21 @@ function setCanvasCursor(mode){
   canvas.style.cursor = map[mode] || "default";
 }
 
+function getPointerCoords(event){
+  const rect = canvas.getBoundingClientRect();
+  const relativeX = event.clientX - rect.left;
+  const logicalX = canvas.width - relativeX;
+  const y = event.clientY - rect.top;
+  return { logicalX, y };
+}
+
 function handlePointerStart(event){
   if(!gameRunning) return;
   pointerActive = true;
   pointerDragged = false;
   pointerStart = { x: event.clientX, y: event.clientY, time: performance.now() };
-  const icon = findIconByPoint(event.clientX, event.clientY);
+  const coords = getPointerCoords(event);
+  const icon = findIconAtLogicalPoint(coords.logicalX, coords.y);
   if(icon){
     pointerDraggingIcon = icon;
     pointerLastPos = { x: event.clientX, y: event.clientY };
@@ -409,11 +419,9 @@ function handlePointerStart(event){
 }
 
 function handlePointerMove(event){
+  const coords = getPointerCoords(event);
   if(pointerActive && pointerDraggingIcon){
-    const rect = canvas.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    pointerDraggingIcon.setDraggedPosition(x, y);
+    pointerDraggingIcon.setDraggedPosition(coords.logicalX, coords.y);
     pointerDragged = true;
     if(pointerLastPos){
       updateScrollByDrag(pointerLastPos.y - event.clientY);
@@ -426,7 +434,7 @@ function handlePointerMove(event){
     }
     setCanvasCursor("swipe");
   } else {
-    const icon = findIconByPoint(event.clientX, event.clientY);
+    const icon = findIconAtLogicalPoint(coords.logicalX, coords.y);
     setCanvasCursor(icon ? "grab" : "idle");
   }
 }
@@ -435,7 +443,8 @@ function handlePointerEnd(event){
   if(!pointerActive) return;
   pointerActive = false;
   if(!pointerDragged){
-    const icon = findIconByPoint(event.clientX, event.clientY);
+    const coords = getPointerCoords(event);
+    const icon = findIconAtLogicalPoint(coords.logicalX, coords.y);
     if(icon){
       handleIconHit(icon);
     }
@@ -453,10 +462,7 @@ function handlePointerCancel(){
   setCanvasCursor("idle");
 }
 
-function findIconByPoint(clientX, clientY){
-  const rect = canvas.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const y = clientY - rect.top;
+function findIconAtLogicalPoint(x, y){
   return floatingIcons.find(icon=>{
     const box = icon.getClickBox();
     return Math.abs(box.x - x) < box.size/2 && Math.abs(box.y - y) < box.size/2;
