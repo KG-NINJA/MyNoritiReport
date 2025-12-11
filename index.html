@@ -161,6 +161,12 @@ let score = 0;
 let hands = null;
 
 let previousHandPositions = { left: null, right: null };
+let pointerDraggingIcon = null; // ポインターで掴んだアイコン
+let pointerActive = false;
+let pointerStart = { x: 0, y: 0, time: 0 };
+let pointerDragged = false; // ドラッグ判定用フラグ
+let pointerLastPos = null; // 画面スクロール用に直前の座標を保持
+const SCROLL_LIMIT = 0.6; // 画面スクロールの上下限
 
 /*---------------------------------------------
    ★ 重要：スクロール用変数（未定義バグ修正）
@@ -202,9 +208,11 @@ class FloatingIcon {
     this.emoji = icons[Math.floor(Math.random()*icons.length)];
     this.size = 50;
     this.opacity = 1;
+    this.offsetX = 0; // ポインター操作でのオフセットX
+    this.offsetY = 0; // ポインター操作でのオフセットY
   }
 
-  getPosition() {
+  getBasePosition() {
     const pad = canvas.width * 0.08;
     const cw = (canvas.width - pad*2) / 3;
     const ch = (canvas.height - pad*2) / 2;
@@ -212,6 +220,14 @@ class FloatingIcon {
     return {
       x: pad + cw*this.gridX + cw/2,
       y: pad + ch*this.gridY + ch/2 + scrollOffset * canvas.height
+    };
+  }
+
+  getPosition() {
+    const base = this.getBasePosition();
+    return {
+      x: base.x + this.offsetX,
+      y: base.y + this.offsetY
     };
   }
 
@@ -247,6 +263,13 @@ class FloatingIcon {
     }
     return false;
   }
+
+  setDraggedPosition(targetX, targetY) {
+    const base = this.getBasePosition();
+    const clamped = clampToCanvas(targetX, targetY, this.size);
+    this.offsetX = clamped.x - base.x;
+    this.offsetY = clamped.y - base.y;
+  }
 }
 
 function pointToLineDistance(px,py,x1,y1,x2,y2){
@@ -260,6 +283,26 @@ function pointToLineDistance(px,py,x1,y1,x2,y2){
   else { xx=x1+param*C; yy=y1+param*D; }
 
   return Math.hypot(px-xx,py-yy);
+}
+
+function clampToCanvas(x, y, size){
+  const margin = size/2 + 10;
+  const clampedX = Math.min(canvas.width - margin, Math.max(margin, x));
+  const clampedY = Math.min(canvas.height - margin, Math.max(margin, y));
+  return { x: clampedX, y: clampedY };
+}
+
+function updateScrollByDrag(deltaY){
+  scrollOffset += deltaY / canvas.height;
+  scrollOffset = Math.min(SCROLL_LIMIT, Math.max(-SCROLL_LIMIT, scrollOffset));
+}
+
+function handleIconHit(icon){
+  if(icon.isDestroyed()) return;
+  icon.destroy();
+  score += 10;
+  scoreEl.textContent = score;
+  playPopSound();
 }
 
 /*---------------------------------------------
@@ -336,6 +379,87 @@ function onHandsResults(results) {
     }
 
     previousHandPositions[key] = curr;
+  });
+}
+
+function setCanvasCursor(mode){
+  const map = {
+    grab: "grab",
+    grabbing: "grabbing",
+    swipe: "crosshair",
+    idle: "default"
+  };
+  canvas.style.cursor = map[mode] || "default";
+}
+
+function handlePointerStart(event){
+  if(!gameRunning) return;
+  pointerActive = true;
+  pointerDragged = false;
+  pointerStart = { x: event.clientX, y: event.clientY, time: performance.now() };
+  const icon = findIconByPoint(event.clientX, event.clientY);
+  if(icon){
+    pointerDraggingIcon = icon;
+    pointerLastPos = { x: event.clientX, y: event.clientY };
+    setCanvasCursor("grabbing");
+  } else {
+    pointerLastPos = { x: event.clientX, y: event.clientY };
+    setCanvasCursor("swipe");
+  }
+}
+
+function handlePointerMove(event){
+  if(pointerActive && pointerDraggingIcon){
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    pointerDraggingIcon.setDraggedPosition(x, y);
+    pointerDragged = true;
+    if(pointerLastPos){
+      updateScrollByDrag(pointerLastPos.y - event.clientY);
+    }
+    pointerLastPos = { x: event.clientX, y: event.clientY };
+    setCanvasCursor("grabbing");
+  } else if(pointerActive) {
+    if(pointerLastPos){
+      pointerLastPos = { x: event.clientX, y: event.clientY };
+    }
+    setCanvasCursor("swipe");
+  } else {
+    const icon = findIconByPoint(event.clientX, event.clientY);
+    setCanvasCursor(icon ? "grab" : "idle");
+  }
+}
+
+function handlePointerEnd(event){
+  if(!pointerActive) return;
+  pointerActive = false;
+  if(!pointerDragged){
+    const icon = findIconByPoint(event.clientX, event.clientY);
+    if(icon){
+      handleIconHit(icon);
+    }
+  }
+  pointerDraggingIcon = null;
+  pointerLastPos = null;
+  setCanvasCursor("idle");
+}
+
+function handlePointerCancel(){
+  pointerActive = false;
+  pointerDraggingIcon = null;
+  pointerDragged = false;
+  pointerLastPos = null;
+  setCanvasCursor("idle");
+}
+
+function findIconByPoint(clientX, clientY){
+  const rect = canvas.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  return floatingIcons.find(icon=>{
+    const box = icon.getClickBox();
+    return Math.abs(box.x - x) < box.size/2 && Math.abs(box.y - y) < box.size/2;
   });
 }
 
@@ -416,6 +540,12 @@ function loop() {
 
   requestAnimationFrame(loop);
 }
+
+canvas.addEventListener("pointerdown", handlePointerStart);
+canvas.addEventListener("pointermove", handlePointerMove);
+canvas.addEventListener("pointerup", handlePointerEnd);
+canvas.addEventListener("pointercancel", handlePointerCancel);
+canvas.addEventListener("pointerleave", handlePointerCancel);
 loop();
 </script>
 
